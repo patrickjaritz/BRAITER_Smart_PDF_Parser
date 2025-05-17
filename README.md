@@ -1,19 +1,34 @@
-# 🎈 Blank app template
+# 📄 Smart PDF Parser & Transformer
 
-A simple Streamlit app template for you to modify!
+An interactive Streamlit app that allows you to upload a PDF, extract and analyze its content, detect tables/images/language, and optionally transform it using OpenAI GPT (e.g. into a summary, report, article, or structured CSV).
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+---
 
-### How to run it on your own machine
+## 🚀 Features
 
-1. Install the requirements
+- ✅ **Upload any PDF** and parse it using [LlamaParse](https://llamaindex.ai/)
+- 🧠 **Detect content features**: language, tables, embedded images
+- 📷 **Extract page images** and embedded images with gallery view
+- 🤖 **Transform content** using GPT (OpenAI API)
+  - Structure into tables (CSV)
+  - Summarize or rewrite as a report/article
+- 💾 **Download output** as:
+  - Plain text (`.txt`)
+  - Markdown (`.md`)
+  - Word (`.docx`)
+  - JSON (`.json`)
+  - CSV (`.csv`, UTF-8 with BOM for Excel)
+  - Excel (`.xlsx`)
 
-   ```
-   $ pip install -r requirements.txt
-   ```
+---
 
-2. Run the app
+## 🧰 Requirements
 
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+- Python 3.8+
+- OpenAI account with API key
+- LlamaParse API key
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
