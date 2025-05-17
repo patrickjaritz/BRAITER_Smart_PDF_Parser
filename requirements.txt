@@ -7,3 +7,4 @@ openai
 PyMuPDF
 python-docx
 Pillow
+openpyxl

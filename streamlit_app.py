@@ -21,9 +21,9 @@ from parser_logic import (
 )
 
 st.set_page_config(page_title="📄 BRAITER Smart PDF Parser")
-st.title("📄 BRAITER Smart PDF Parser (with Language & Table Detection)")
+st.title("📄 BRAITER Smart PDF Parser")
 st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
+    "Now with automatic language & table detection!"
 )
 
 uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"])
@@ -147,7 +147,7 @@ if uploaded_file:
         for i, img_path in enumerate(image_paths):
             col = cols[i % 3]  # Cycle through columns
             with col:
-                st.image(Image.open(img_path), use_column_width=True)
+                st.image(Image.open(img_path), use_container_width=True)
                 with open(img_path, "rb") as f:
                     st.download_button(
                         label=f"Download {img_path.split('/')[-1]}",
@@ -166,7 +166,7 @@ if uploaded_file:
         for i, img_path in enumerate(embedded):
             col = cols[i % 3]
             with col:
-                st.image(Image.open(img_path), use_column_width=True)
+                st.image(Image.open(img_path), use_container_width=True)
                 with open(img_path, "rb") as f:
                     st.download_button(
                         label=f"Download {img_path.split('/')[-1]}",
