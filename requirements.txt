@@ -1,1 +1,9 @@
 streamlit
+python-dotenv
+langdetect
+pdf2image
+llama-parse
+openai
+PyMuPDF
+python-docx
+Pillow

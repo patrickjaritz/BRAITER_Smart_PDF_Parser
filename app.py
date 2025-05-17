@@ -1,5 +1,3 @@
-
-
 # ------------------ app.py ------------------
 
 import streamlit as st
@@ -22,9 +20,6 @@ from parser_logic import (
 
 st.set_page_config(page_title="📄 BRAITER Smart PDF Parser")
 st.title("📄 BRAITER Smart PDF Parser (with Language & Table Detection)")
-st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
-)
 
 uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"])
 
