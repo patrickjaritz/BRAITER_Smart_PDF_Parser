@@ -20,159 +20,201 @@ from parser_logic import (
     transform_markdown_with_gpt
 )
 
-st.set_page_config(page_title="📄 BRAITER Smart PDF Parser")
-st.title("📄 BRAITER Smart PDF Parser")
-st.write(
-    "Now with automatic language & table detection!"
-)
+# --- Constants for UI and Processing ---
+APP_TITLE = "📄 BRAITER Smart PDF Parser (with Language & Table Detection)"
+FILE_UPLOAD_LABEL = "Upload your PDF"
+GPT_MIN_TEXT_LENGTH = 100 # Minimum characters in parsed text to enable GPT features
 
-uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"])
+# Error prefixes from parser_logic.py
+ERROR_PREFIX = "⚠️ Error:"
+INFO_PREFIX = "ℹ️ Info:" # For informational messages that might not be errors but need attention
 
-# === Handle File Upload and Parsing ===
+# --- Helper Functions ---
+
+def display_image_gallery(image_paths: list[str], caption_prefix: str, num_columns: int = 3):
+    """Displays a gallery of images with download buttons."""
+    if not image_paths:
+        st.info(f"No {caption_prefix.lower()} images found.")
+        return
+
+    st.markdown(f"### 🖼 {caption_prefix} Images Gallery")
+    cols = st.columns(num_columns)
+    for i, img_path in enumerate(image_paths):
+        col = cols[i % num_columns]
+        try:
+            img = Image.open(img_path)
+            col.image(img, use_column_width=True)
+            with open(img_path, "rb") as f_img:
+                col.download_button(
+                    label=f"Download {os.path.basename(img_path)}",
+                    data=f_img.read(), # Read here as file object might close
+                    file_name=os.path.basename(img_path),
+                    mime="image/jpeg" if img_path.lower().endswith((".jpg", ".jpeg")) else "image/png"
+                )
+        except FileNotFoundError:
+            col.error(f"Image not found: {os.path.basename(img_path)}")
+        except Exception as e:
+            col.error(f"Error loading {os.path.basename(img_path)}: {e}")
+
+
+def handle_export_buttons(transformed_text: str):
+    """Displays various download buttons for the transformed text."""
+    st.download_button("📥 Download as TXT", transformed_text, file_name="ai_output.txt")
+    st.download_button("📥 Download as Markdown (.md)", transformed_text, file_name="ai_output.md")
+
+    # DOCX export
+    try:
+        docx_buffer = io.BytesIO()
+        doc = Document()
+        for line in transformed_text.split("\n"):
+            doc.add_paragraph(line)
+        doc.save(docx_buffer)
+        docx_buffer.seek(0)
+        st.download_button("📥 Download as Word (.docx)", docx_buffer, file_name="ai_output.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    except Exception as e:
+        st.error(f"Error creating DOCX: {e}")
+
+    # JSON, CSV, Excel export (attempt to parse as JSON for structured data)
+    try:
+        json_obj = json.loads(transformed_text)
+    except json.JSONDecodeError:
+        # If not valid JSON, treat the whole text as a single piece of data for export
+        json_obj = {"ai_output": transformed_text}
+
+    try:
+        if isinstance(json_obj, list) and all(isinstance(item, dict) for item in json_obj):
+            df = pd.DataFrame(json_obj)
+        elif isinstance(json_obj, dict):
+            df = pd.DataFrame([json_obj])
+        else: # Fallback for non-structured JSON (e.g. a simple string or number in JSON)
+            df = pd.DataFrame({"AI Output": [str(json_obj)]}) # Ensure it's a string
+
+        if df is not None and not df.empty:
+            st.markdown("### 📊 Table Preview (from AI Output)")
+            st.dataframe(df.head()) # Show only a preview
+
+            json_export_data = json.dumps(json_obj, indent=2).encode("utf-8")
+            st.download_button("📥 Download as JSON", json_export_data, file_name="ai_output.json", mime="application/json")
+
+            csv_export_data = "\ufeff" + df.to_csv(index=False, sep=";").encode("utf-8")
+            st.download_button("📥 Download as CSV (semicolon)", csv_export_data, file_name="ai_output.csv", mime="text/csv")
+
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='AI_Output')
+            excel_buffer.seek(0)
+            st.download_button(label="📥 Download as Excel (.xlsx)", data=excel_buffer, file_name="ai_output.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as e:
+        st.error(f"Error preparing data for Table/JSON/CSV/Excel export: {e}")
+        # Still offer to download the raw transformed text as JSON if parsing failed at DataFrame stage
+        if not isinstance(json_obj, dict) or json_obj.get("ai_output") != transformed_text:
+             st.download_button("📥 Download Raw AI Output as JSON", json.dumps({"raw_ai_output": transformed_text}).encode("utf-8"),
+                                file_name="ai_output_raw.json", mime="application/json")
+
+
+# --- Main App Logic ---
+st.set_page_config(page_title=APP_TITLE)
+st.title(APP_TITLE)
+
+uploaded_file = st.file_uploader(FILE_UPLOAD_LABEL, type=["pdf"])
+
 if uploaded_file:
+    # Manage session state for parsed text to avoid re-parsing on every interaction
     if "last_file_name" not in st.session_state or uploaded_file.name != st.session_state["last_file_name"]:
-        st.session_state.pop("parsed_text", None)
+        st.session_state.pop("parsed_text_or_error", None) # Clear previous results
         st.session_state["last_file_name"] = uploaded_file.name
+        st.session_state["temp_pdf_path"] = None # Reset temp file path
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(uploaded_file.read())
-        path = tmp.name
+    # Create a temporary file for the PDF
+    if not st.session_state.get("temp_pdf_path"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.getvalue()) # Use getvalue() for UploadedFile
+            st.session_state["temp_pdf_path"] = tmp.name
+    
+    pdf_path = st.session_state["temp_pdf_path"]
 
-    if "parsed_text" not in st.session_state:
-        st.info("Parsing PDF. Please wait...")
-        parsed_text = parse_pdf(path)
-        st.session_state["parsed_text"] = parsed_text
-        st.success("✅ Parsing Complete")
-    else:
-        parsed_text = st.session_state["parsed_text"]
-
-    # Metadata
-    lang = detect_language(parsed_text)
-    has_tables = contains_tables(parsed_text)
-    has_images = contains_images(parsed_text)
-
-    st.markdown(f"**🌍 Language Detected:** `{lang}`")
-    st.markdown(f"**📊 Tables Detected:** `{has_tables}`")
-    st.markdown(f"**🖼 Images Detected (Markdown):** `{has_images}`")
-
-    if st.checkbox("🔍 Show full parsed Markdown"):
-        st.text_area("Full Parsed Markdown", parsed_text, height=300)
-
-    # === GPT Transformation ===
-    if len(parsed_text.strip()) > 100:
-        with st.expander("🤖 Transform Markdown with GPT"):
-            st.markdown("Use OpenAI to enhance your parsed document.")
-            use_custom_prompt = st.checkbox("Use custom prompt", value=False)
-
-            if use_custom_prompt:
-                user_prompt = st.text_area("Enter your custom prompt:")
+    # Parse PDF if not already parsed or if file changed
+    if "parsed_text_or_error" not in st.session_state:
+        with st.spinner("Parsing PDF. Please wait..."):
+            parsed_text_or_error = parse_pdf(pdf_path)
+            st.session_state["parsed_text_or_error"] = parsed_text_or_error
+            if not parsed_text_or_error.startswith(ERROR_PREFIX):
+                st.success("✅ Parsing Complete")
             else:
-                transform_type = st.selectbox("Choose output type:", ["table", "summary", "report", "article"])
-                user_prompt = None
+                st.error(parsed_text_or_error) # Show parsing error
 
-            if st.button("Transform with GPT"):
-                with st.spinner("Processing with GPT..."):
-                    transformed = transform_markdown_with_gpt(parsed_text, user_prompt or transform_type)
-                    st.success("✅ AI Transformation Complete")
-                    st.markdown("### ✨ Transformed Document")
-                    st.text_area("Output", transformed, height=300)
+    parsed_text_or_error = st.session_state["parsed_text_or_error"]
 
-                    # Export Options
-                    st.download_button("📥 Download as TXT", transformed, file_name="ai_output.txt")
-                    st.download_button("📥 Download as Markdown (.md)", transformed, file_name="ai_output.md")
+    # --- Display results if parsing was successful ---
+    if not parsed_text_or_error.startswith(ERROR_PREFIX):
+        parsed_text = parsed_text_or_error # It's actual text, not an error message
 
-                    # DOCX export
-                    docx_buffer = io.BytesIO()
-                    doc = Document()
-                    for line in transformed.split("\n"):
-                        doc.add_paragraph(line)
-                    doc.save(docx_buffer)
-                    docx_buffer.seek(0)
-                    st.download_button("📥 Download as Word (.docx)", docx_buffer, file_name="ai_output.docx",
-                                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        # Metadata Section
+        with st.expander("📄 Document Metadata", expanded=True):
+            lang = detect_language(parsed_text)
+            has_tables_val = contains_tables(parsed_text)
+            has_images_val = contains_images(parsed_text)
+            st.markdown(f"**🌍 Language Detected:** `{lang}`")
+            st.markdown(f"**📊 Tables Detected (Markdown):** `{has_tables_val}`")
+            st.markdown(f"**🖼 Images Detected (Markdown):** `{has_images_val}`")
 
-                    # JSON + CSV + Excel export
-                    try:
-                        parsed_json = json.loads(transformed)
-                        json_obj = parsed_json
-                    except json.JSONDecodeError:
-                        json_obj = {"ai_output": transformed}
+        if st.checkbox("🔍 Show full parsed Markdown"):
+            st.text_area("Full Parsed Markdown", parsed_text, height=300)
 
-                    if isinstance(json_obj, list) and all(isinstance(item, dict) for item in json_obj):
-                        df = pd.DataFrame(json_obj)
-                    elif isinstance(json_obj, dict):
-                        df = pd.DataFrame([json_obj])
-                    else:
-                        df = pd.DataFrame({"AI Output": [transformed]})
+        # GPT Transformation Section (only if parsed text is substantial)
+        if len(parsed_text.strip()) >= GPT_MIN_TEXT_LENGTH:
+            with st.expander("🤖 Transform Markdown with GPT"):
+                st.markdown("Use OpenAI to enhance your parsed document.")
+                use_custom_prompt = st.checkbox("Use custom prompt", value=False)
 
-                    # Optional Table Preview
-                    if df is not None and len(df.columns) > 1:
-                        st.markdown("### 📊 Table Preview")
-                        st.dataframe(df)
+                if use_custom_prompt:
+                    user_prompt_input = st.text_area("Enter your custom prompt:")
+                else:
+                    transform_type = st.selectbox("Choose output type:", ["table", "summary", "report", "article"])
+                    user_prompt_input = None # Will use transform_type as key for preset prompt
 
-                    # JSON
-                    json_buffer = json.dumps(json_obj, indent=2).encode("utf-8")
-                    st.download_button("📥 Download as JSON", json_buffer, file_name="ai_output.json",
-                                       mime="application/json")
+                if st.button("Transform with GPT"):
+                    with st.spinner("Processing with GPT..."):
+                        transformed_output = transform_markdown_with_gpt(parsed_text, user_prompt_input or transform_type)
+                        
+                        if transformed_output.startswith(ERROR_PREFIX):
+                            st.error(transformed_output)
+                        elif transformed_output.startswith(INFO_PREFIX):
+                            st.info(transformed_output)
+                            st.markdown("### ✨ Transformed Document (Partial/Info)")
+                            st.text_area("Output", transformed_output, height=300)
+                        else:
+                            st.success("✅ AI Transformation Complete")
+                            st.markdown("### ✨ Transformed Document")
+                            st.text_area("Output", transformed_output, height=300)
+                            handle_export_buttons(transformed_output)
+        else:
+            st.info(f"Parsed text is too short (less than {GPT_MIN_TEXT_LENGTH} characters). GPT transformation features are disabled.")
 
-                    # CSV
-                    csv_buffer = "\ufeff" + df.to_csv(index=False, sep=";")
-                    csv_buffer = csv_buffer.encode("utf-8")
+        # Image Extraction Galleries (using the helper function)
+        # Note: extract_images_from_pdf and extract_embedded_images might return empty lists or lists of paths
+        # The display_image_gallery function handles the "No images found" case.
+        
+        page_images = extract_images_from_pdf(pdf_path) # Uses default output folder from parser_logic
+        display_image_gallery(page_images, "Extracted Page")
 
-                    st.download_button("📥 Download as CSV (semicolon)", csv_buffer, file_name="ai_output.csv",
-                                       mime="text/csv")
-
-                    # Excel
-                    excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                        df.to_excel(writer, index=False, sheet_name='AI_Output')
-                        excel_buffer.seek(0)
-
-                    st.download_button(
-                        label="📥 Download as Excel (.xlsx)",
-                        data=excel_buffer,
-                        file_name="ai_output.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
+        embedded_images = extract_embedded_images(pdf_path) # Uses default output folder
+        display_image_gallery(embedded_images, "Embedded")
 
     else:
-        st.warning("Parsed text too short or empty — please upload a valid PDF first.")
+        # This case is if parse_pdf itself returned an error string already displayed
+        # No further processing on parsed_text is done here.
+        # Could add a message like "Resolve parsing error to see more options."
+        pass # Error already shown when "parsed_text_or_error" was set
 
-    # === Page Rendered Images ===
-    image_paths = extract_images_from_pdf(path)
-    if image_paths:
-        st.markdown("### 🖼 Extracted Page Images Gallery")
-        cols = st.columns(3)
-        for i, img_path in enumerate(image_paths):
-            col = cols[i % 3]  # Cycle through columns
-            with col:
-                st.image(Image.open(img_path), use_container_width=True)
-                with open(img_path, "rb") as f:
-                    st.download_button(
-                        label=f"Download {img_path.split('/')[-1]}",
-                        data=f,
-                        file_name=img_path.split('/')[-1],
-                        mime="image/jpeg"
-                    )
-    else:
-        st.info("No full-page images found.")
+else:
+    st.info("Upload a PDF file to begin processing.")
 
-    # === Embedded Images ===
-    embedded = extract_embedded_images(path)
-    if embedded:
-        st.markdown("### 🖼 Embedded Images Gallery")
-        cols = st.columns(3)
-        for i, img_path in enumerate(embedded):
-            col = cols[i % 3]
-            with col:
-                st.image(Image.open(img_path), use_container_width=True)
-                with open(img_path, "rb") as f:
-                    st.download_button(
-                        label=f"Download {img_path.split('/')[-1]}",
-                        data=f,
-                        file_name=img_path.split('/')[-1],
-                        mime="image/jpeg" if img_path.endswith(".jpg") else "image/png"
-                    )
-    else:
-        st.info("No embedded images found.")
+# Cleanup for temporary PDF file (optional, as OS might handle it, but good practice)
+# This is tricky with Streamlit's execution model. A more robust way would be a session cleanup mechanism.
+# For now, relying on OS to clean /tmp or manual cleanup if files are explicitly not deleted by NamedTemporaryFile.
+# If delete=True was used with NamedTemporaryFile, file is deleted once closed.
+# Since we use delete=False and store path in session, it persists.
+# A proper cleanup would involve st.on_session_end or similar, if available and suitable.
